@@ -1,0 +1,32 @@
+# Build output directories
+build/
+dist/
+out/
+bin/
+*.zip
+
+# Temporary and disassembly debug files
+*_disasm.txt
+disasm.txt
+*.disasm
+*.dmp
+*.log
+
+# Visual Studio & IDE files
+.vs/
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+.vscode/
+.idea/
+
+# CMake artifacts (if generated in root)
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+
+# Windows files
+Thumbs.db
+desktop.ini
+$RECYCLE.BIN/
