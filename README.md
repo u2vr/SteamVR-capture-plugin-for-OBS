@@ -2,7 +2,7 @@
 
 **English** | [Русская версия](README_RUS.md)
 
-Native C++/DirectX 11 plugin for **OBS Studio (30.x / 31.x / 32.x)** designed specifically for capturing **SteamVR (including Meta Quest 3 via SteamLink / AirLink / Virtual Desktop)** with **hardware sensor-based 3D stabilization** and **seamless dual-eye compositing** (dominant right eye with sights/crosshairs + peripheral left eye expansion to 16:9).
+Native C++/DirectX 11 plugin for **OBS Studio (30.x / 31.x / 32.x)** designed specifically for capturing **SteamVR (including Meta Quest 3 via SteamLink)** with **hardware sensor-based 3D stabilization** and **seamless dual-eye compositing** (dominant right eye with sights/crosshairs + peripheral left eye expansion to 16:9 AND MORE).
 
 ---
 
@@ -15,7 +15,7 @@ Native C++/DirectX 11 plugin for **OBS Studio (30.x / 31.x / 32.x)** designed sp
 2. **Accurate Frame Pose Synchronization (`Compositor_FrameTiming::m_HmdPose`)**
    * The plugin samples the exact tracking rotation matrix from the HMD sensors corresponding to the rendered frame ($\mathbf{R}_{\text{reproj}} = \mathbf{R}_{\text{raw}}^T \mathbf{R}_{\text{smooth}}$), eliminating phase latency and "jelly" artifacts during fast head motions.
 
-3. **SteamVR-Style Dual Eye Mode ("Right Dominant + Left Peripheral")**
+3. **SteamVR-Style Dual Eye Mode ("Right Dominant + Left Peripheral") and other modes**
    * The right eye covers the central and primary viewport (~82–85%), ensuring collimator and optical sights align **exactly where you aim** with no double vision or parallax distortion.
    * The left eye fills the peripheral area on the left using a soft gradient blend seam (`smoothstep`), constructing a wide 16:9 image.
 
