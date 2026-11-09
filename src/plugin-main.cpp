@@ -81,13 +81,149 @@ OBS_Export const char *obs_module_author(void)
 } // extern "C"
 
 /* =========================================================================
- * Dynamic OpenVR Loader (loads openvr_api.dll only when vrserver.exe runs)
+ * Safe SEH Invocation Wrappers for OpenVR
  * ========================================================================= */
 typedef uint32_t (*PFN_VR_InitInternal2)(vr::EVRInitError *peError, vr::EVRApplicationType eType, const char *pStartupInfo);
 typedef void (*PFN_VR_ShutdownInternal)(void);
 typedef void *(*PFN_VR_GetGenericInterface)(const char *pchInterfaceVersion, vr::EVRInitError *peError);
 typedef const char *(*PFN_VR_GetVRInitErrorAsEnglishDescription)(vr::EVRInitError error);
 
+static uint32_t seh_vr_init(PFN_VR_InitInternal2 fnInit, vr::EVRInitError *peError, vr::EVRApplicationType eType, const char *pStartupInfo)
+{
+	if (!fnInit) {
+		if (peError) *peError = vr::VRInitError_Init_NotInitialized;
+		return 0;
+	}
+	__try {
+		return fnInit(peError, eType, pStartupInfo);
+	} __except (EXCEPTION_EXECUTE_HANDLER) {
+		if (peError) *peError = vr::VRInitError_Init_Internal;
+		return 0;
+	}
+}
+
+static void *seh_vr_get_interface(PFN_VR_GetGenericInterface fnGetInterface, const char *pchInterfaceVersion, vr::EVRInitError *peError)
+{
+	if (!fnGetInterface) {
+		if (peError) *peError = vr::VRInitError_Init_NotInitialized;
+		return nullptr;
+	}
+	__try {
+		return fnGetInterface(pchInterfaceVersion, peError);
+	} __except (EXCEPTION_EXECUTE_HANDLER) {
+		if (peError) *peError = vr::VRInitError_Init_Internal;
+		return nullptr;
+	}
+}
+
+static vr::EVRInitError seh_set_sdk_version(vr::IVRSystem *sys, uint32_t nMajor, uint32_t nMinor, uint32_t nBuild)
+{
+	if (!sys)
+		return vr::VRInitError_Init_NotInitialized;
+	__try {
+		return sys->SetSDKVersion(nMajor, nMinor, nBuild);
+	} __except (EXCEPTION_EXECUTE_HANDLER) {
+		return vr::VRInitError_Init_Internal;
+	}
+}
+
+static bool seh_poll_next_event(vr::IVRSystem *sys, vr::VREvent_t *pEvent, uint32_t uncbVREvent)
+{
+	if (!sys || !pEvent)
+		return false;
+	__try {
+		return sys->PollNextEvent(pEvent, uncbVREvent);
+	} __except (EXCEPTION_EXECUTE_HANDLER) {
+		return false;
+	}
+}
+
+static bool seh_get_frame_timing(vr::IVRCompositor *comp, vr::Compositor_FrameTiming *pTiming, uint32_t unFramesAgo)
+{
+	if (!comp || !pTiming)
+		return false;
+	__try {
+		return comp->GetFrameTiming(pTiming, unFramesAgo);
+	} __except (EXCEPTION_EXECUTE_HANDLER) {
+		return false;
+	}
+}
+
+static vr::EVRCompositorError seh_get_last_pose(vr::IVRCompositor *comp, vr::TrackedDeviceIndex_t unDeviceIndex, vr::TrackedDevicePose_t *pOutputPoseArray, vr::TrackedDevicePose_t *pActualPoseArray)
+{
+	if (!comp || !pOutputPoseArray)
+		return vr::VRCompositorError_IndexOutOfRange;
+	__try {
+		return comp->GetLastPoseForTrackedDeviceIndex(unDeviceIndex, pOutputPoseArray, pActualPoseArray);
+	} __except (EXCEPTION_EXECUTE_HANDLER) {
+		return vr::VRCompositorError_RequestFailed;
+	}
+}
+
+static void seh_get_device_to_absolute_tracking_pose(vr::IVRSystem *sys, vr::ETrackingUniverseOrigin eOrigin, float fPredictedSecondsToPhotonsFromNow, vr::TrackedDevicePose_t *pTrackedDevicePoseArray, uint32_t unTrackedDevicePoseArrayCount)
+{
+	if (!sys || !pTrackedDevicePoseArray)
+		return;
+	__try {
+		sys->GetDeviceToAbsoluteTrackingPose(eOrigin, fPredictedSecondsToPhotonsFromNow, pTrackedDevicePoseArray, unTrackedDevicePoseArrayCount);
+	} __except (EXCEPTION_EXECUTE_HANDLER) {
+		if (unTrackedDevicePoseArrayCount > 0) {
+			pTrackedDevicePoseArray[0].bPoseIsValid = false;
+		}
+	}
+}
+
+static void seh_get_projection_raw(vr::IVRSystem *sys, vr::EVREye eEye, float *pfLeft, float *pfRight, float *pfTop, float *pfBottom)
+{
+	if (!sys)
+		return;
+	__try {
+		sys->GetProjectionRaw(eEye, pfLeft, pfRight, pfTop, pfBottom);
+	} __except (EXCEPTION_EXECUTE_HANDLER) {
+		if (pfLeft) *pfLeft = -1.0f;
+		if (pfRight) *pfRight = 1.0f;
+		if (pfTop) *pfTop = -1.0f;
+		if (pfBottom) *pfBottom = 1.0f;
+	}
+}
+
+static vr::EVRCompositorError seh_get_mirror_texture(vr::IVRCompositor *comp, vr::EVREye eEye, void *pD3D11DeviceOrResource, void **ppD3D11ShaderResourceView)
+{
+	if (!comp || !ppD3D11ShaderResourceView)
+		return vr::VRCompositorError_RequestFailed;
+	__try {
+		return comp->GetMirrorTextureD3D11(eEye, pD3D11DeviceOrResource, ppD3D11ShaderResourceView);
+	} __except (EXCEPTION_EXECUTE_HANDLER) {
+		*ppD3D11ShaderResourceView = nullptr;
+		return vr::VRCompositorError_RequestFailed;
+	}
+}
+
+static void seh_release_mirror_texture(vr::IVRCompositor *comp, void *pTexture)
+{
+	if (!comp || !pTexture)
+		return;
+	__try {
+		comp->ReleaseMirrorTextureD3D11(pTexture);
+	} __except (EXCEPTION_EXECUTE_HANDLER) {
+		// Suppressed safely
+	}
+}
+
+static void seh_vr_shutdown(PFN_VR_ShutdownInternal fnShutdown)
+{
+	if (!fnShutdown)
+		return;
+	__try {
+		fnShutdown();
+	} __except (EXCEPTION_EXECUTE_HANDLER) {
+		// Suppressed safely
+	}
+}
+
+/* =========================================================================
+ * Dynamic OpenVR Loader (loads openvr_api.dll only when vrserver.exe runs)
+ * ========================================================================= */
 struct OpenVRApi {
 	HMODULE hModule = nullptr;
 	PFN_VR_InitInternal2 InitInternal2 = nullptr;
@@ -98,24 +234,41 @@ struct OpenVRApi {
 	vr::IVRCompositor *compositor = nullptr;
 	bool initialized = false;
 
-	static bool is_vrserver_running() {
+	HANDLE hVrServer = nullptr;
+	DWORD vrserver_pid = 0;
+
+	static DWORD find_vrserver_pid() {
 		HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
 		if (snap == INVALID_HANDLE_VALUE)
-			return false;
+			return 0;
 
 		PROCESSENTRY32W pe{};
 		pe.dwSize = sizeof(pe);
-		bool found = false;
+		DWORD pid = 0;
 		if (Process32FirstW(snap, &pe)) {
 			do {
 				if (_wcsicmp(pe.szExeFile, L"vrserver.exe") == 0) {
-					found = true;
+					pid = pe.th32ProcessID;
 					break;
 				}
 			} while (Process32NextW(snap, &pe));
 		}
 		CloseHandle(snap);
-		return found;
+		return pid;
+	}
+
+	static bool is_vrserver_running() {
+		return find_vrserver_pid() != 0;
+	}
+
+	bool is_connected_server_alive() {
+		if (!initialized)
+			return false;
+		if (hVrServer) {
+			DWORD wait = WaitForSingleObject(hVrServer, 0);
+			return (wait == WAIT_TIMEOUT);
+		}
+		return is_vrserver_running();
 	}
 
 	bool load_dll() {
@@ -126,7 +279,7 @@ struct OpenVRApi {
 		HMODULE hSelf = nullptr;
 		if (GetModuleHandleExW(
 			    GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
-			    reinterpret_cast<LPCWSTR>(&is_vrserver_running),
+			    reinterpret_cast<LPCWSTR>(&find_vrserver_pid),
 			    &hSelf)) {
 			wchar_t module_path[MAX_PATH] = {};
 			if (GetModuleFileNameW(hSelf, module_path, MAX_PATH) > 0) {
@@ -167,47 +320,61 @@ struct OpenVRApi {
 		if (initialized && system && compositor)
 			return true;
 
-		if (!is_vrserver_running())
+		DWORD pid = find_vrserver_pid();
+		if (pid == 0)
 			return false;
 
 		if (!load_dll())
 			return false;
 
 		vr::EVRInitError err = vr::VRInitError_None;
-		InitInternal2(&err, vr::VRApplication_Background, nullptr);
+		seh_vr_init(InitInternal2, &err, vr::VRApplication_Background, nullptr);
 		if (err != vr::VRInitError_None) {
 			return false;
 		}
 
-		system = reinterpret_cast<vr::IVRSystem *>(GetGenericInterface(vr::IVRSystem_Version, &err));
+		system = reinterpret_cast<vr::IVRSystem *>(seh_vr_get_interface(GetGenericInterface, vr::IVRSystem_Version, &err));
 		if (!system || err != vr::VRInitError_None) {
-			ShutdownInternal();
+			seh_vr_shutdown(ShutdownInternal);
 			system = nullptr;
 			return false;
 		}
 
-		err = system->SetSDKVersion(vr::k_nSteamVRVersionMajor, vr::k_nSteamVRVersionMinor, vr::k_nSteamVRVersionBuild);
-		if (err != vr::VRInitError_None) {
+		err = seh_set_sdk_version(system, vr::k_nSteamVRVersionMajor, vr::k_nSteamVRVersionMinor, vr::k_nSteamVRVersionBuild);
+		if (err != vr::VRInitError_None && err != vr::VRInitError_Init_ClientVersionAlreadyProvided) {
 			blog(LOG_WARNING, "[VR Mirror by U2VR] SetSDKVersion returned %d", (int)err);
 		}
 
-		compositor = reinterpret_cast<vr::IVRCompositor *>(GetGenericInterface(vr::IVRCompositor_Version, &err));
+		compositor = reinterpret_cast<vr::IVRCompositor *>(seh_vr_get_interface(GetGenericInterface, vr::IVRCompositor_Version, &err));
 		if (!compositor || err != vr::VRInitError_None) {
-			ShutdownInternal();
+			seh_vr_shutdown(ShutdownInternal);
 			system = nullptr;
 			compositor = nullptr;
 			return false;
 		}
 
+		vrserver_pid = pid;
+		if (hVrServer) {
+			CloseHandle(hVrServer);
+			hVrServer = nullptr;
+		}
+		hVrServer = OpenProcess(SYNCHRONIZE, FALSE, pid);
+
 		initialized = true;
-		blog(LOG_INFO, "[VR Mirror by U2VR] Connected to SteamVR (SDK %u.%u.%u)",
-		     vr::k_nSteamVRVersionMajor, vr::k_nSteamVRVersionMinor, vr::k_nSteamVRVersionBuild);
+		blog(LOG_INFO, "[VR Mirror by U2VR] Connected to SteamVR (SDK %u.%u.%u, PID %lu)",
+		     vr::k_nSteamVRVersionMajor, vr::k_nSteamVRVersionMinor, vr::k_nSteamVRVersionBuild, pid);
 		return true;
 	}
 
-	void disconnect() {
-		if (initialized && ShutdownInternal) {
-			ShutdownInternal();
+	void disconnect(bool call_shutdown = true) {
+		if (hVrServer) {
+			CloseHandle(hVrServer);
+			hVrServer = nullptr;
+		}
+		vrserver_pid = 0;
+
+		if (initialized && ShutdownInternal && call_shutdown) {
+			seh_vr_shutdown(ShutdownInternal);
 		}
 		system = nullptr;
 		compositor = nullptr;
@@ -215,10 +382,14 @@ struct OpenVRApi {
 	}
 
 	void unload() {
-		disconnect();
+		disconnect(true);
 		if (hModule) {
 			FreeLibrary(hModule);
 			hModule = nullptr;
+			InitInternal2 = nullptr;
+			ShutdownInternal = nullptr;
+			GetGenericInterface = nullptr;
+			GetErrorString = nullptr;
 		}
 	}
 };
@@ -249,6 +420,10 @@ enum OutputResPreset {
 
 struct VRStabilizerSource {
 	obs_source_t *source = nullptr;
+	std::recursive_mutex state_mutex;
+
+	bool server_quitting = false;
+	DWORD dead_server_pid = 0;
 
 	// User settings
 	int eye_mode = 0;               // 0: RightDom+Left, 1: LeftDom+Right, 2: Right, 3: Left
@@ -333,16 +508,16 @@ struct VRStabilizerSource {
 		out_proj[3] = bot_tan_neg;
 	}
 
-	void release_mirror_resources() {
+	void release_mirror_resources(bool notify_compositor = true) {
 		left_unorm_srv.Reset();
 		right_unorm_srv.Reset();
-		if (vr_api.compositor) {
+		if (vr_api.compositor && notify_compositor && vr_api.is_connected_server_alive()) {
 			if (raw_left_srv) {
-				vr_api.compositor->ReleaseMirrorTextureD3D11(raw_left_srv);
+				seh_release_mirror_texture(vr_api.compositor, raw_left_srv);
 				raw_left_srv = nullptr;
 			}
 			if (raw_right_srv) {
-				vr_api.compositor->ReleaseMirrorTextureD3D11(raw_right_srv);
+				seh_release_mirror_texture(vr_api.compositor, raw_right_srv);
 				raw_right_srv = nullptr;
 			}
 		} else {
@@ -352,11 +527,13 @@ struct VRStabilizerSource {
 		mirror_ready = false;
 	}
 
-	void full_reset() {
-		release_mirror_resources();
-		vr_api.disconnect();
+	void full_reset(bool graceful = true) {
+		bool server_alive = vr_api.is_connected_server_alive();
+		bool do_cleanup_calls = graceful && server_alive;
+		release_mirror_resources(do_cleanup_calls);
+		vr_api.disconnect(do_cleanup_calls);
 		stabilizer.reset();
-		last_retry_tick = 0;
+		last_retry_tick = GetTickCount64();
 	}
 
 	bool try_initialize_capture(bool force_now = false) {
@@ -364,9 +541,23 @@ struct VRStabilizerSource {
 			return true;
 
 		ULONGLONG now = GetTickCount64();
-		if (!force_now && (now - last_retry_tick < 2000))
+		if (!force_now && (now - last_retry_tick < 3000))
 			return false;
 		last_retry_tick = now;
+
+		DWORD current_pid = OpenVRApi::find_vrserver_pid();
+		if (current_pid == 0) {
+			server_quitting = false;
+			dead_server_pid = 0;
+			return false;
+		}
+
+		if (!force_now && (server_quitting || (dead_server_pid != 0 && current_pid == dead_server_pid))) {
+			return false;
+		}
+
+		server_quitting = false;
+		dead_server_pid = 0;
 
 		if (!vr_api.connect())
 			return false;
@@ -400,18 +591,19 @@ struct VRStabilizerSource {
 		}
 
 		// Acquire both Left and Right eye mirror textures from SteamVR
-		release_mirror_resources();
+		release_mirror_resources(true);
 
-		vr::EVRCompositorError err_l = vr_api.compositor->GetMirrorTextureD3D11(
-			vr::Eye_Left, renderer.device.Get(), &raw_left_srv);
-		vr::EVRCompositorError err_r = vr_api.compositor->GetMirrorTextureD3D11(
-			vr::Eye_Right, renderer.device.Get(), &raw_right_srv);
+		vr::EVRCompositorError err_l = seh_get_mirror_texture(
+			vr_api.compositor, vr::Eye_Left, renderer.device.Get(), &raw_left_srv);
+		vr::EVRCompositorError err_r = seh_get_mirror_texture(
+			vr_api.compositor, vr::Eye_Right, renderer.device.Get(), &raw_right_srv);
 
 		if (err_l != vr::VRCompositorError_None || !raw_left_srv ||
 		    err_r != vr::VRCompositorError_None || !raw_right_srv) {
 			blog(LOG_WARNING, "[VR Mirror by U2VR] GetMirrorTextureD3D11 failed: left=(err %d, srv %p), right=(err %d, srv %p)",
 			     (int)err_l, raw_left_srv, (int)err_r, raw_right_srv);
-			release_mirror_resources();
+			release_mirror_resources(false);
+			vr_api.disconnect(true);
 			return false;
 		}
 
@@ -424,7 +616,8 @@ struct VRStabilizerSource {
 		if (!left_unorm_srv || !right_unorm_srv || lw == 0 || lh == 0 || rw == 0 || rh == 0) {
 			blog(LOG_WARNING, "[VR Mirror by U2VR] create_unorm_srv failed: left=(srv %p, %ux%u), right=(srv %p, %ux%u)",
 			     left_unorm_srv.Get(), lw, lh, right_unorm_srv.Get(), rw, rh);
-			release_mirror_resources();
+			release_mirror_resources(true);
+			vr_api.disconnect(true);
 			return false;
 		}
 
@@ -434,8 +627,8 @@ struct VRStabilizerSource {
 		// Query projection frustum tangents for both eyes
 		float l_left = -1.0f, l_right = 1.0f, l_top = -1.0f, l_bottom = 1.0f;
 		float r_left = -1.0f, r_right = 1.0f, r_top = -1.0f, r_bottom = 1.0f;
-		vr_api.system->GetProjectionRaw(vr::Eye_Left, &l_left, &l_right, &l_top, &l_bottom);
-		vr_api.system->GetProjectionRaw(vr::Eye_Right, &r_left, &r_right, &r_top, &r_bottom);
+		seh_get_projection_raw(vr_api.system, vr::Eye_Left, &l_left, &l_right, &l_top, &l_bottom);
+		seh_get_projection_raw(vr_api.system, vr::Eye_Right, &r_left, &r_right, &r_top, &r_bottom);
 
 		normalize_projection(l_left, l_right, l_top, l_bottom, proj_left);
 		normalize_projection(r_left, r_right, r_top, r_bottom, proj_right);
@@ -456,28 +649,34 @@ struct VRStabilizerSource {
 		if (!vr_api.initialized || !vr_api.compositor || !vr_api.system)
 			return false;
 
-		// Check if SteamVR sent a Quit event
+		// Check if SteamVR sent a Quit or restart event
 		vr::VREvent_t ev{};
-		while (vr_api.system->PollNextEvent(&ev, sizeof(ev))) {
-			if (ev.eventType == vr::VREvent_Quit) {
-				blog(LOG_INFO, "[VR Mirror by U2VR] SteamVR shutting down; disconnecting capture");
-				full_reset();
+		while (seh_poll_next_event(vr_api.system, &ev, sizeof(ev))) {
+			if (ev.eventType == vr::VREvent_Quit ||
+			    ev.eventType == vr::VREvent_DriverRequestedQuit ||
+			    ev.eventType == vr::VREvent_RestartRequested) {
+				blog(LOG_INFO, "[VR Mirror by U2VR] SteamVR shutdown event (0x%X); disconnecting capture gracefully", ev.eventType);
+				server_quitting = true;
+				dead_server_pid = vr_api.vrserver_pid;
+				full_reset(true);
 				return false;
 			}
 		}
 
+		if (!vr_api.initialized || !vr_api.compositor || !vr_api.system)
+			return false;
+
 		// 1. Prefer exact frame timing pose used to render the current compositor frame
 		vr::Compositor_FrameTiming timing{};
 		timing.m_nSize = sizeof(vr::Compositor_FrameTiming);
-		if (vr_api.compositor->GetFrameTiming(&timing, 0) && timing.m_HmdPose.bPoseIsValid) {
+		if (seh_get_frame_timing(vr_api.compositor, &timing, 0) && timing.m_HmdPose.bPoseIsValid) {
 			*out_mat = timing.m_HmdPose.mDeviceToAbsoluteTracking;
 			return true;
 		}
 
 		// 2. Fallback to compositor's last HMD render pose
 		vr::TrackedDevicePose_t pose{};
-		if (vr_api.compositor->GetLastPoseForTrackedDeviceIndex(
-			    vr::k_unTrackedDeviceIndex_Hmd, &pose, nullptr) == vr::VRCompositorError_None &&
+		if (seh_get_last_pose(vr_api.compositor, vr::k_unTrackedDeviceIndex_Hmd, &pose, nullptr) == vr::VRCompositorError_None &&
 		    pose.bPoseIsValid) {
 			*out_mat = pose.mDeviceToAbsoluteTracking;
 			return true;
@@ -485,7 +684,7 @@ struct VRStabilizerSource {
 
 		// 3. Fallback to direct HMD tracking pose (e.g. when sitting in SteamVR Home/Grid)
 		vr::TrackedDevicePose_t poses[1] = {};
-		vr_api.system->GetDeviceToAbsoluteTrackingPose(vr::TrackingUniverseStanding, 0.0f, poses, 1);
+		seh_get_device_to_absolute_tracking_pose(vr_api.system, vr::TrackingUniverseStanding, 0.0f, poses, 1);
 		if (poses[0].bPoseIsValid) {
 			*out_mat = poses[0].mDeviceToAbsoluteTracking;
 			return true;
@@ -509,6 +708,8 @@ static void vr_stab_update(void *data, obs_data_t *settings)
 	auto *s = reinterpret_cast<VRStabilizerSource *>(data);
 	if (!s || !settings)
 		return;
+
+	std::lock_guard<std::recursive_mutex> lock(s->state_mutex);
 
 	s->eye_mode        = (int)obs_data_get_int(settings, PROP_EYE_MODE);
 	s->smooth_strength = (float)obs_data_get_double(settings, PROP_SMOOTH_STRENGTH);
@@ -548,9 +749,12 @@ static void vr_stab_destroy(void *data)
 	if (!s)
 		return;
 
-	s->release_mirror_resources();
-	s->renderer.shutdown();
-	s->vr_api.unload();
+	{
+		std::lock_guard<std::recursive_mutex> lock(s->state_mutex);
+		s->full_reset(true);
+		s->renderer.shutdown();
+		s->vr_api.unload();
+	}
 	delete s;
 }
 
@@ -588,7 +792,10 @@ static bool on_reconnect_clicked(obs_properties_t *props, obs_property_t *proper
 	(void)property;
 	auto *s = reinterpret_cast<VRStabilizerSource *>(data);
 	if (s) {
-		s->full_reset();
+		std::lock_guard<std::recursive_mutex> lock(s->state_mutex);
+		s->server_quitting = false;
+		s->dead_server_pid = 0;
+		s->full_reset(true);
 		s->try_initialize_capture(true);
 	}
 	return true;
@@ -673,10 +880,14 @@ static void vr_stab_video_tick(void *data, float seconds)
 	if (!s)
 		return;
 
+	std::lock_guard<std::recursive_mutex> lock(s->state_mutex);
+
 	// Periodically check if vrserver.exe exited while we were connected
-	if (s->vr_api.initialized && !OpenVRApi::is_vrserver_running()) {
+	if (s->vr_api.initialized && !s->vr_api.is_connected_server_alive()) {
 		blog(LOG_INFO, "[VR Mirror by U2VR] SteamVR process ended; resetting capture");
-		s->full_reset();
+		s->server_quitting = true;
+		s->dead_server_pid = s->vr_api.vrserver_pid;
+		s->full_reset(false);
 	}
 }
 
@@ -687,9 +898,19 @@ static void vr_stab_video_render(void *data, gs_effect_t *effect)
 	if (!s)
 		return;
 
+	std::lock_guard<std::recursive_mutex> lock(s->state_mutex);
+
 	if (!s->mirror_ready) {
 		if (!s->try_initialize_capture(false))
 			return;
+	}
+
+	if (!s->vr_api.is_connected_server_alive()) {
+		blog(LOG_INFO, "[VR Mirror by U2VR] SteamVR no longer running during render, resetting");
+		s->server_quitting = true;
+		s->dead_server_pid = s->vr_api.vrserver_pid;
+		s->full_reset(false);
+		return;
 	}
 
 	// Calculate high-precision delta time
@@ -711,6 +932,10 @@ static void vr_stab_video_render(void *data, gs_effect_t *effect)
 			s->roll_lock,
 			s->max_angle_deg);
 	} else if (!s->mirror_ready) {
+		return;
+	}
+
+	if (!s->left_unorm_srv || !s->right_unorm_srv) {
 		return;
 	}
 

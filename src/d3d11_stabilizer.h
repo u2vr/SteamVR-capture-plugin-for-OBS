@@ -501,6 +501,10 @@ public:
 	void render(ID3D11ShaderResourceView *left_srv, ID3D11ShaderResourceView *right_srv, const ShaderParamsCB &params) {
 		if (!context || !out_rtv || !vs || !ps || !cb || !sampler)
 			return;
+		if (!left_srv || !right_srv)
+			return;
+		if (device && device->GetDeviceRemovedReason() != S_OK)
+			return;
 
 		D3D11_MAPPED_SUBRESOURCE mapped{};
 		if (SUCCEEDED(context->Map(cb.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped))) {
