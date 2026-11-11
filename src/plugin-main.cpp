@@ -882,12 +882,30 @@ static void vr_stab_video_tick(void *data, float seconds)
 
 	std::lock_guard<std::recursive_mutex> lock(s->state_mutex);
 
-	// Periodically check if vrserver.exe exited while we were connected
-	if (s->vr_api.initialized && !s->vr_api.is_connected_server_alive()) {
-		blog(LOG_INFO, "[VR Mirror by U2VR] SteamVR process ended; resetting capture");
-		s->server_quitting = true;
-		s->dead_server_pid = s->vr_api.vrserver_pid;
-		s->full_reset(false);
+	if (s->vr_api.initialized && s->vr_api.system) {
+		// Poll OpenVR events on EVERY frame, even when this source is NOT visible/rendered
+		// (e.g. user switched to 2D scene, hidden source, pause screen)
+		vr::VREvent_t ev{};
+		while (seh_poll_next_event(s->vr_api.system, &ev, sizeof(ev))) {
+			if (ev.eventType == vr::VREvent_Quit ||
+			    ev.eventType == vr::VREvent_DriverRequestedQuit ||
+			    ev.eventType == vr::VREvent_RestartRequested) {
+				blog(LOG_INFO, "[VR Mirror by U2VR] SteamVR shutdown event (0x%X) received in video_tick; disconnecting capture gracefully", ev.eventType);
+				s->server_quitting = true;
+				s->dead_server_pid = s->vr_api.vrserver_pid;
+				s->full_reset(true);
+				return;
+			}
+		}
+
+		// Check if vrserver.exe process ended unexpectedly
+		if (!s->vr_api.is_connected_server_alive()) {
+			blog(LOG_INFO, "[VR Mirror by U2VR] SteamVR process ended; resetting capture");
+			s->server_quitting = true;
+			s->dead_server_pid = s->vr_api.vrserver_pid;
+			s->full_reset(false);
+			return;
+		}
 	}
 }
 
